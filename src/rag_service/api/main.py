@@ -10,6 +10,7 @@ from rag_service.api.routes.retrieve import router as retrieve_router
 from rag_service.api.routes.ingest import router as ingest_router
 from rag_service.api.routes.documents import router as documents_router
 from rag_service.api.routes.ingestion_progress import router as ingestion_progress_router
+from rag_service.api.routes.admin import router as admin_router
 from rag_service.config.settings import settings
 from rag_service.db.models import Base
 from rag_service.db.session import engine
@@ -44,3 +45,4 @@ app.include_router(retrieve_router)
 app.include_router(ingest_router)
 app.include_router(documents_router)
 app.include_router(ingestion_progress_router)
+app.include_router(admin_router)

@@ -13,6 +13,7 @@ docker compose -f compose/docker-compose.yml --env-file compose/.env up --build 
 Then:
 
 - Health: `curl -sS http://localhost:8021/health`
+- Admin status page (polling): `http://localhost:8021/admin/status`
 
 ## LM Studio (embeddings + LLM)
 
@@ -100,3 +101,17 @@ Some result objects may include graph fields:
 - `graph_shared_entities: <int>`
 
 Note: the first retrieval may take longer while the cross-encoder reranker weights download; they persist in the `rag_models` Docker volume.
+
+## Bulk ingest (10k `.md` files)
+
+The simplest bulk-ingest path is the included CLI wrapper (uses `curl`, so no extra Python deps):
+
+```bash
+./scripts/ragctl.py ingest-dir \
+  --api-url http://localhost:8021 \
+  --api-key dev-newproj-key \
+  --root /path/to/markdown \
+  --glob '**/*.md' \
+  --scope tenant \
+  --concurrency 4
+```
