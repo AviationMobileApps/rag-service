@@ -59,6 +59,13 @@ def retrieve(req: RetrieveRequest, ctx: RequestContext = Depends(get_request_con
         search_limit = min(50, max(req.limit, req.limit * settings.rerank_oversample))
         results = vs.search(query=req.query, limit=search_limit, alpha=req.alpha, filters=filters)
 
+        graph_debug: dict[str, Any] = {
+            "enabled": bool(settings.graph_expansion_enabled),
+            "seed_chunk_ids": [],
+            "expanded_count": 0,
+            "error": None,
+        }
+
         candidates: list[dict[str, Any]] = []
         for r in results:
             props = r["properties"] or {}
@@ -94,6 +101,7 @@ def retrieve(req: RetrieveRequest, ctx: RequestContext = Depends(get_request_con
                 seed_chunk_ids.append(str(chunk_id))
                 if len(seed_chunk_ids) >= settings.graph_seed_limit:
                     break
+            graph_debug["seed_chunk_ids"] = seed_chunk_ids
             try:
                 gs = GraphSearch()
                 graph_rows = gs.expand(
@@ -122,8 +130,10 @@ def retrieve(req: RetrieveRequest, ctx: RequestContext = Depends(get_request_con
                             "graph_entities": row.get("graph_entities"),
                         }
                     )
+                graph_debug["expanded_count"] = len(expanded)
             except Exception:
                 # Graph expansion is best-effort; retrieval must still work without it.
+                graph_debug["error"] = "graph_expansion_failed"
                 expanded = []
 
         dedup: dict[str, dict[str, Any]] = {}
@@ -148,6 +158,6 @@ def retrieve(req: RetrieveRequest, ctx: RequestContext = Depends(get_request_con
         merged = list(dedup.values())
         ranked = rerank(req.query, merged, text_key="text")
         ranked = ranked[: req.limit]
-        return {"query": req.query, "count": len(ranked), "results": ranked}
+        return {"query": req.query, "count": len(ranked), "graph": graph_debug, "results": ranked}
     finally:
         vs.close()

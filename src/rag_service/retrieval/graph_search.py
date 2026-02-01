@@ -78,3 +78,102 @@ LIMIT $limit
         with _driver().session(database=settings.neo4j_database) as session:
             rows = session.run(query, **params)
             return [r.data() for r in rows]
+
+    def list_entities(
+        self,
+        *,
+        ctx: RequestContext,
+        q: str | None = None,
+        entity_type: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        query = f"""
+MATCH (c:Chunk)-[:MENTIONS]->(e:Entity)
+WHERE c.tenantId = $tenant_id AND e.tenantId = $tenant_id AND {_scope_filter_cypher('c')}
+  AND ($q IS NULL OR toLower(e.name) CONTAINS toLower($q))
+  AND ($entity_type IS NULL OR e.type = $entity_type)
+WITH e, count(DISTINCT c.chunkId) AS chunk_mentions
+RETURN
+  e.entityId AS entity_id,
+  e.type AS type,
+  e.name AS name,
+  chunk_mentions AS chunk_mentions
+ORDER BY chunk_mentions DESC, toLower(e.name) ASC
+LIMIT $limit
+"""
+        params = {
+            "tenant_id": ctx.tenant_id,
+            "workspace_id": ctx.workspace_id,
+            "principal_id": ctx.principal_id,
+            "q": (q.strip() if q else None),
+            "entity_type": (entity_type.strip() if entity_type else None),
+            "limit": int(limit),
+        }
+        with _driver().session(database=settings.neo4j_database) as session:
+            rows = session.run(query, **params)
+            return [r.data() for r in rows]
+
+    def entity_chunks(
+        self,
+        *,
+        entity_id: str,
+        ctx: RequestContext,
+        limit: int = 25,
+    ) -> list[dict[str, Any]]:
+        query = f"""
+MATCH (c:Chunk)-[:MENTIONS]->(e:Entity {{entityId: $entity_id}})
+WHERE c.tenantId = $tenant_id AND e.tenantId = $tenant_id AND {_scope_filter_cypher('c')}
+RETURN
+  c.chunkId AS chunk_id,
+  c.parentDocId AS doc_id,
+  c.scope AS scope,
+  c.workspaceId AS workspace_id,
+  c.principalId AS principal_id,
+  c.title AS title,
+  c.section AS section,
+  c.summary AS summary,
+  c.pages AS pages,
+  c.text AS text
+ORDER BY c.updatedAt DESC
+LIMIT $limit
+"""
+        params = {
+            "tenant_id": ctx.tenant_id,
+            "workspace_id": ctx.workspace_id,
+            "principal_id": ctx.principal_id,
+            "entity_id": str(entity_id),
+            "limit": int(limit),
+        }
+        with _driver().session(database=settings.neo4j_database) as session:
+            rows = session.run(query, **params)
+            return [r.data() for r in rows]
+
+    def document_entities(
+        self,
+        *,
+        doc_id: str,
+        ctx: RequestContext,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        query = f"""
+MATCH (c:Chunk)-[:MENTIONS]->(e:Entity)
+WHERE c.tenantId = $tenant_id AND e.tenantId = $tenant_id AND c.parentDocId = $doc_id AND {_scope_filter_cypher('c')}
+WITH e, count(DISTINCT c.chunkId) AS chunk_mentions
+RETURN
+  e.entityId AS entity_id,
+  e.type AS type,
+  e.name AS name,
+  chunk_mentions AS chunk_mentions
+ORDER BY chunk_mentions DESC, toLower(e.name) ASC
+LIMIT $limit
+"""
+        params = {
+            "tenant_id": ctx.tenant_id,
+            "workspace_id": ctx.workspace_id,
+            "principal_id": ctx.principal_id,
+            "doc_id": str(doc_id),
+            "limit": int(limit),
+        }
+        with _driver().session(database=settings.neo4j_database) as session:
+            rows = session.run(query, **params)
+            return [r.data() for r in rows]

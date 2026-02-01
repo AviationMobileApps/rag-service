@@ -28,6 +28,29 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _sanitize_display_filename(raw: str, *, default: str) -> str:
+    name = (raw or "").replace("\x00", "").strip()
+    if not name:
+        name = default
+
+    # Normalize Windows separators to "/".
+    name = name.replace("\\", "/")
+
+    # Force relative-ish display (avoid leading "/").
+    name = name.lstrip("/")
+
+    # Drop traversal components; keep remaining components for user-friendly display.
+    parts: list[str] = []
+    for part in name.split("/"):
+        part = part.strip()
+        if not part or part == "." or part == "..":
+            continue
+        parts.append(part)
+
+    name = "/".join(parts) if parts else default
+    return name[:512]
+
+
 def _publish_queued(
     r: redis.Redis,
     *,
@@ -80,8 +103,9 @@ def ingest_document(
     uploads_dir = Path(settings.rag_data_dir) / "uploads" / ctx.tenant_id / doc_id
     uploads_dir.mkdir(parents=True, exist_ok=True)
 
-    filename = Path(file.filename or f"{doc_id}").name
-    storage_path = uploads_dir / filename
+    display_filename = _sanitize_display_filename(str(file.filename or ""), default=doc_id)
+    storage_filename = Path(display_filename).name
+    storage_path = uploads_dir / storage_filename
 
     content = file.file.read()
     if not content:
@@ -98,7 +122,7 @@ def ingest_document(
             scope=doc_scope,
             workspace_id=workspace_id if doc_scope != DocumentScope.tenant else None,
             principal_id=principal_id if doc_scope == DocumentScope.user else None,
-            filename=filename,
+            filename=display_filename,
             content_type=content_type,
             storage_path=str(storage_path),
             status=DocumentStatus.queued,
@@ -119,7 +143,7 @@ def ingest_document(
         scope=doc_scope.value,
         workspace_id=workspace_id if doc_scope != DocumentScope.tenant else None,
         principal_id=principal_id if doc_scope == DocumentScope.user else None,
-        filename=filename,
+        filename=display_filename,
     )
 
     return IngestResponse(doc_id=doc_id, status="queued")

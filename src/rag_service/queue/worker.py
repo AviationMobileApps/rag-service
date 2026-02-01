@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import json
-import uuid
 from datetime import datetime, timezone
-from dataclasses import dataclass
 from pathlib import Path
 
 import redis
@@ -20,19 +18,6 @@ from rag_service.retrieval.vector_search import VectorSearch
 
 
 logger = structlog.get_logger()
-
-
-@dataclass(frozen=True)
-class _SimpleChunk:
-    text: str
-    chunk_id: str
-    section: str
-    title: str
-    summary: str
-    why_this_chunk: str
-    pages: list[int]
-    start_char: int
-    end_char: int
 
 
 STAGE_PROGRESS = {
@@ -123,65 +108,34 @@ def main() -> None:
 
             # Chunk
             publish_progress(r, doc, "chunking", "Chunking…")
-            dyn_chunks = []
-            if settings.dynamic_chunking_enabled:
-                try:
-                    if content_type == "text/markdown" or path.suffix.lower() in {".md", ".txt"}:
-                        dyn_chunks = chunk_text_file(
-                            doc_id=doc.doc_id,
-                            text_path=str(path),
-                            llm=llm,
-                            doc_type="document",
-                            max_window_tokens=settings.chunker_window_tokens,
-                            overlap_tokens=settings.chunker_overlap_tokens,
-                            llm_max_tokens=settings.chunker_llm_max_tokens,
-                            tokenizer_model=settings.chunker_tokenizer_model,
-                        )
-                    else:
-                        dyn_chunks = chunk_pdf_file(
-                            doc_id=doc.doc_id,
-                            pdf_path=str(path),
-                            llm=llm,
-                            doc_type="document",
-                            max_window_tokens=settings.chunker_window_tokens,
-                            overlap_tokens=settings.chunker_overlap_tokens,
-                            llm_max_tokens=settings.chunker_llm_max_tokens,
-                            tokenizer_model=settings.chunker_tokenizer_model,
-                        )
-                except Exception as e:
-                    logger.warning("dynamic_chunking_failed_fallback", doc_id=doc.doc_id, error=str(e))
-                    dyn_chunks = []
+            if not settings.dynamic_chunking_enabled:
+                raise RuntimeError("Dynamic chunking is required (set DYNAMIC_CHUNKING_ENABLED=1)")
 
-            # Fallback: fixed-size char chunking (always available)
+            if content_type == "text/markdown" or path.suffix.lower() in {".md", ".txt"}:
+                dyn_chunks = chunk_text_file(
+                    doc_id=doc.doc_id,
+                    text_path=str(path),
+                    llm=llm,
+                    doc_type="document",
+                    max_window_tokens=settings.chunker_window_tokens,
+                    overlap_tokens=settings.chunker_overlap_tokens,
+                    llm_max_tokens=settings.chunker_llm_max_tokens,
+                    tokenizer_model=settings.chunker_tokenizer_model,
+                )
+            else:
+                dyn_chunks = chunk_pdf_file(
+                    doc_id=doc.doc_id,
+                    pdf_path=str(path),
+                    llm=llm,
+                    doc_type="document",
+                    max_window_tokens=settings.chunker_window_tokens,
+                    overlap_tokens=settings.chunker_overlap_tokens,
+                    llm_max_tokens=settings.chunker_llm_max_tokens,
+                    tokenizer_model=settings.chunker_tokenizer_model,
+                )
+
             if not dyn_chunks:
-                if content_type == "text/markdown" or path.suffix.lower() in {".md", ".txt"}:
-                    text = path.read_text(encoding="utf-8", errors="ignore")
-                else:
-                    import fitz  # pymupdf
-
-                    with fitz.open(str(path)) as pdf:
-                        parts = [(page.get_text("text") or "") for page in pdf]
-                    text = "\n\n".join(parts)
-
-                max_chars = 4000
-                dyn_chunks = []
-                for i in range(0, len(text), max_chars):
-                    chunk_text = text[i : i + max_chars].strip()
-                    if not chunk_text:
-                        continue
-                    dyn_chunks.append(
-                        _SimpleChunk(
-                            text=chunk_text,
-                            chunk_id=str(uuid.uuid4()),
-                            section="unknown",
-                            title=doc.filename,
-                            summary="",
-                            why_this_chunk="",
-                            pages=[],
-                            start_char=i,
-                            end_char=min(i + max_chars, len(text)),
-                        )
-                    )
+                raise RuntimeError("Dynamic chunking produced 0 chunks; check LLM connectivity/output and document text extraction")
 
             # Store chunks in Weaviate
             publish_progress(r, doc, "embedding", "Embedding + indexing…")

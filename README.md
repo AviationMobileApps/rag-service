@@ -13,7 +13,7 @@ docker compose -f compose/docker-compose.yml --env-file compose/.env up --build 
 Then:
 
 - Health: `curl -sS http://localhost:8021/health`
-- Admin status page (polling): `http://localhost:8021/admin/status`
+- Diagnostics page (upload/status/retrieve/entities): `http://localhost:8021/admin/status`
 
 ## LM Studio (embeddings + LLM)
 
@@ -26,7 +26,7 @@ Then:
 
 Ingestion pipeline:
 
-- Dynamic chunking via LLM (Signal305-style; falls back to fixed-size chunking if the LLM fails)
+- Dynamic chunking via LLM (Signal305-style; ingestion fails if LLM chunking fails)
 - Embeddings via LM Studio → Weaviate
 - Entity extraction via LLM → Neo4j (`Chunk`/`Entity` + `MENTIONS`)
 

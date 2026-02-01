@@ -230,16 +230,9 @@ def build_user_message(*, window_text: str, overlap_start: int, section: str) ->
 
 
 def call_dynamic_chunker(*, llm: LLMClient, user_message: str, max_tokens: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    try:
-        data, meta = llm.generate_json(system_prompt=DYNAMIC_CHUNKER_SYSTEM_PROMPT, user_prompt=user_message, max_tokens=max_tokens)
-    except Exception as e:
-        logger.warning("dynamic_chunker_llm_failed", error=str(e))
-        return [], {"error": str(e)}
-
+    data, meta = llm.generate_json(system_prompt=DYNAMIC_CHUNKER_SYSTEM_PROMPT, user_prompt=user_message, max_tokens=max_tokens)
     if not isinstance(data, list):
-        logger.warning("dynamic_chunker_invalid_top_level", type=str(type(data)))
-        return [], meta
-
+        raise ValueError(f"dynamic_chunker_invalid_top_level: expected list, got {type(data)}")
     return data, meta
 
 
@@ -291,7 +284,7 @@ def chunk_pages(
     tokenizer_model: str = "cl100k_base",
 ) -> list[Chunk]:
     if not pages:
-        return []
+        raise RuntimeError("No text extracted from document; cannot chunk")
 
     windows = make_windows_with_overlap(
         pages,
@@ -308,12 +301,17 @@ def chunk_pages(
         user_message = build_user_message(window_text=win["text"], overlap_start=win["overlap_start"], section="unknown")
         logger.info("chunking_window", doc_id=doc_id, window=f"{i+1}/{len(windows)}", pages=win["pages"], tokens=win["token_count"])
 
-        raw_chunks, meta = call_dynamic_chunker(llm=llm, user_message=user_message, max_tokens=llm_max_tokens)
+        try:
+            raw_chunks, meta = call_dynamic_chunker(llm=llm, user_message=user_message, max_tokens=llm_max_tokens)
+        except Exception as e:
+            logger.warning("chunker_window_failed", doc_id=doc_id, window=i + 1, error=str(e))
+            raise RuntimeError(f"Dynamic chunking failed for window {i + 1}/{len(windows)}: {e}") from e
+
         if not raw_chunks:
-            logger.warning("chunker_window_no_chunks", doc_id=doc_id, window=i + 1, meta=meta)
-            continue
+            raise RuntimeError(f"Dynamic chunker returned 0 chunks for window {i + 1}/{len(windows)}")
 
         filtered = filter_overlap_chunks(raw_chunks, overlap_start=win["overlap_start"], window_text=win["text"])
+        added = 0
         for chunk_dict in filtered:
             if not validate_chunk(chunk_dict):
                 continue
@@ -342,8 +340,14 @@ def chunk_pages(
                     why_this_chunk=str(chunk_dict.get("why_this_chunk") or ""),
                 )
             )
+            added += 1
+
+        if added == 0:
+            raise RuntimeError(f"Dynamic chunker returned no valid chunks for window {i + 1}/{len(windows)}")
 
     logger.info("dynamic_chunking_complete", doc_id=doc_id, chunks=len(all_chunks), windows=len(windows))
+    if not all_chunks:
+        raise RuntimeError("Dynamic chunking produced 0 chunks")
     return all_chunks
 
 
