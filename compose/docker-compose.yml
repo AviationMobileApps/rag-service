@@ -68,6 +68,9 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+      args:
+        BAKE_RERANKER: "1"
+        BAKE_RERANKER_MODEL: ${RERANKER_MODEL}
     environment:
       RAG_API_PORT: ${RAG_API_PORT}
       DATABASE_URL: "postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
@@ -101,7 +104,6 @@ services:
       - "${RAG_API_PORT}:8021"
     volumes:
       - ../var:/data
-      - rag_models:/models
     depends_on:
       postgres:
         condition: service_healthy
@@ -116,6 +118,8 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+      args:
+        BAKE_RERANKER: "0"
     environment:
       DATABASE_URL: "postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
       REDIS_URL: "redis://redis:6379/0"
@@ -147,7 +151,6 @@ services:
     command: ["python", "-m", "rag_service.queue.worker"]
     volumes:
       - ../var:/data
-      - rag_models:/models
     depends_on:
       postgres:
         condition: service_healthy
@@ -164,4 +167,3 @@ volumes:
   weaviate_data:
   neo4j_data:
   neo4j_logs:
-  rag_models:

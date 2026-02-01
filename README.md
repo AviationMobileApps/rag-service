@@ -100,7 +100,7 @@ Some result objects may include graph fields:
 - `graph_entities: [...]`
 - `graph_shared_entities: <int>`
 
-Note: the first retrieval may take longer while the cross-encoder reranker weights download; they persist in the `rag_models` Docker volume.
+Note: reranker weights are baked into the Docker image by default (see `Dockerfile` build args `BAKE_RERANKER` / `BAKE_RERANKER_MODEL`) so runtime can be fully offline.
 
 ## Bulk ingest (10k `.md` files)
 
