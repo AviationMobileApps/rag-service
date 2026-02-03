@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from typing import Optional
@@ -18,6 +19,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="", env_ignore_empty=True)
 
     rag_api_port: int = Field(default=8021, alias="RAG_API_PORT")
+
+    rag_admin_username: Optional[str] = Field(default=None, alias="RAG_ADMIN_USERNAME")
+    rag_admin_password: Optional[str] = Field(default=None, alias="RAG_ADMIN_PASSWORD")
 
     database_url: str = Field(
         default="postgresql+psycopg://rag:rag@localhost:5432/rag",
@@ -54,6 +58,7 @@ class Settings(BaseSettings):
     llm_base_url: str = Field(default="http://localhost:1234", alias="LLM_BASE_URL")
     llm_model: str = Field(default="gpt-oss-120b", alias="LLM_MODEL")
     llm_api_key: Optional[str] = Field(default=None, alias="LLM_API_KEY")
+    llm_reasoning_effort: Optional[str] = Field(default=None, alias="LLM_REASONING_EFFORT")
     llm_timeout_s: float = Field(default=300.0, alias="LLM_TIMEOUT_S")
 
     reranker_enabled: bool = Field(default=True, alias="RERANKER_ENABLED")
@@ -74,6 +79,13 @@ class Settings(BaseSettings):
     graph_seed_min_rerank_score: float = Field(default=0.2, alias="GRAPH_SEED_MIN_RERANK_SCORE")
     graph_expansion_limit: int = Field(default=20, alias="GRAPH_EXPANSION_LIMIT")
     graph_entity_limit: int = Field(default=25, alias="GRAPH_ENTITY_LIMIT")
+
+    def admin_auth_enabled(self) -> bool:
+        return bool((self.rag_admin_username or "").strip() and (self.rag_admin_password or "").strip())
+
+    def admin_session_secret(self) -> str:
+        pw = (self.rag_admin_password or "").encode("utf-8")
+        return hashlib.sha256(b"rag-service-admin:" + pw).hexdigest()
 
     def tenants(self) -> list[Tenant]:
         try:

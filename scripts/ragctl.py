@@ -8,9 +8,24 @@ import os
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Optional
+
+
+def _fmt_eta(seconds: float | None) -> str:
+    if seconds is None or seconds < 0 or not float(seconds) == float(seconds):
+        return "?"
+    seconds = float(seconds)
+    if seconds < 1:
+        return "<1s"
+    mins, sec = divmod(int(seconds + 0.5), 60)
+    hrs, mins = divmod(mins, 60)
+    if hrs:
+        return f"{hrs}h{mins:02d}m{sec:02d}s"
+    if mins:
+        return f"{mins}m{sec:02d}s"
+    return f"{sec}s"
 
 
 def _headers(api_key: str, workspace_id: Optional[str], principal_id: Optional[str]) -> dict[str, str]:
@@ -66,27 +81,85 @@ def ingest_one(
     return str(payload.get("doc_id") or "")
 
 
+def _iter_matching_files(root: Path, pattern: str):
+    try:
+        for p in root.glob(pattern):
+            try:
+                if p.is_file():
+                    yield p
+            except OSError:
+                continue
+    except Exception as e:
+        raise RuntimeError(f"glob failed for root={root} pattern={pattern}: {e}") from e
+
+
 def cmd_ingest_dir(args: argparse.Namespace) -> int:
     root = Path(args.root).expanduser().resolve()
     if not root.exists():
-        print(f"ERROR: root path does not exist: {root}", file=sys.stderr)
+        print(f"ERROR: root path does not exist: {root}", file=sys.stderr, flush=True)
         return 2
 
-    patterns = args.glob or "**/*.md"
-    paths = sorted({p for p in root.glob(patterns) if p.is_file()})
-    if args.limit and args.limit > 0:
-        paths = paths[: args.limit]
+    pattern = args.glob or "**/*.md"
+    limit = int(args.limit or 0)
+    prescan = bool(getattr(args, "prescan", False))
 
-    if not paths:
-        print("No files matched.")
-        return 0
+    print(f"Scanning {root} for {pattern} …", file=sys.stderr, flush=True)
 
-    print(f"Enqueuing {len(paths)} files from {root} …")
+    total: int | None = None
+    if prescan:
+        # Count first so we can show accurate totals/ETA, at the cost of slower startup.
+        matched = 0
+        for _ in _iter_matching_files(root, pattern):
+            matched += 1
+            if limit > 0 and matched >= limit:
+                break
+        if limit > 0:
+            total = min(matched, limit)
+        else:
+            total = matched
+
+    if limit > 0 and total is None:
+        total = limit
+
+    if limit > 0:
+        print(f"Enqueuing up to {limit} file(s) from {root} …", flush=True)
+    else:
+        print(f"Enqueuing file(s) from {root} …", flush=True)
 
     failures: list[tuple[Path, str]] = []
     t0 = time.time()
+    completed = 0
+    ok = 0
+    submitted = 0
+    last_progress_ts = 0.0
+    progress_is_tty = sys.stderr.isatty()
+    progress_min_interval_s = 0.25 if progress_is_tty else 2.0
 
-    def _run(p: Path) -> tuple[Path, str]:
+    def _render_progress(*, final: bool = False) -> None:
+        nonlocal last_progress_ts
+        now = time.time()
+        if not final and (now - last_progress_ts) < progress_min_interval_s:
+            return
+        last_progress_ts = now
+
+        elapsed = max(0.001, now - t0)
+        rate = completed / elapsed
+        if total is not None:
+            remaining = max(0, int(total) - completed)
+            eta = remaining / rate if rate > 0 else None
+            line = f"[{completed}/{total}] ok={ok} failed={len(failures)} remaining={remaining} rate={rate:.2f}/s eta={_fmt_eta(eta)}"
+        else:
+            line = f"[{completed}] ok={ok} failed={len(failures)} submitted={submitted} rate={rate:.2f}/s"
+        if final:
+            print(line, file=sys.stderr)
+        else:
+            if progress_is_tty:
+                print(line.ljust(140), end="\r", file=sys.stderr, flush=True)
+            else:
+                print(line, file=sys.stderr, flush=True)
+
+    def _run(p: Path) -> tuple[Path, str, float]:
+        start = time.time()
         try:
             doc_id = ingest_one(
                 api_url=args.api_url,
@@ -99,22 +172,63 @@ def cmd_ingest_dir(args: argparse.Namespace) -> int:
             )
             if not doc_id:
                 raise RuntimeError("missing doc_id in response")
-            return p, doc_id
+            return p, doc_id, time.time() - start
         except Exception as e:
-            return p, f"ERROR: {e}"
+            return p, f"ERROR: {e}", time.time() - start
 
     with ThreadPoolExecutor(max_workers=max(1, int(args.concurrency))) as ex:
-        futures = [ex.submit(_run, p) for p in paths]
-        for fut in as_completed(futures):
-            p, result = fut.result()
-            if result.startswith("ERROR:"):
-                failures.append((p, result))
-                print(f"{p}: {result}", file=sys.stderr)
-            else:
-                print(f"{p}: {result}")
+        pending = set()
+        path_iter = _iter_matching_files(root, pattern)
+        done_scanning = False
+
+        def _submit_next() -> bool:
+            nonlocal submitted, done_scanning, total
+            if limit > 0 and submitted >= limit:
+                done_scanning = True
+                return False
+            try:
+                p = next(path_iter)
+            except StopIteration:
+                done_scanning = True
+                if total is None:
+                    total = submitted
+                elif submitted < int(total):
+                    total = submitted
+                return False
+            pending.add(ex.submit(_run, p))
+            submitted += 1
+            return True
+
+        # Prime the queue.
+        while len(pending) < int(args.concurrency) and _submit_next():
+            pass
+        if done_scanning and not pending and submitted == 0:
+            print("No files matched.", flush=True)
+            return 0
+
+        while pending:
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for fut in done:
+                p, result, dt_s = fut.result()
+                completed += 1
+                if result.startswith("ERROR:"):
+                    failures.append((p, result))
+                    print(file=sys.stderr, flush=True)
+                    print(f"{p}: {result} ({dt_s:.2f}s)", file=sys.stderr, flush=True)
+                else:
+                    ok += 1
+                    print(f"{p}: {result} ({dt_s:.2f}s)", flush=True)
+                _render_progress()
+
+            while len(pending) < int(args.concurrency) and _submit_next():
+                pass
 
     dt = time.time() - t0
-    print(f"Done in {dt:.1f}s. ok={len(paths) - len(failures)} failed={len(failures)}")
+    print(file=sys.stderr, flush=True)
+    if total is None:
+        total = completed
+    _render_progress(final=True)
+    print(f"Done in {dt:.1f}s. ok={ok} failed={len(failures)} total={completed}", flush=True)
     return 0 if not failures else 1
 
 
@@ -133,6 +247,7 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--concurrency", type=int, default=4)
     ingest.add_argument("--timeout-s", type=float, default=30.0)
     ingest.add_argument("--limit", type=int, default=0, help="Optional cap for testing (0 = no cap)")
+    ingest.add_argument("--prescan", action="store_true", help="Count matches before uploading (slower start, accurate totals/ETA)")
     ingest.set_defaults(func=cmd_ingest_dir)
 
     return p

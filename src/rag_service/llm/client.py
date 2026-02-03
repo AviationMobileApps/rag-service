@@ -16,12 +16,19 @@ class LLMClient:
         base_url: Optional[str] = None,
         model: Optional[str] = None,
         api_key: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
         timeout_s: float = 300.0,
     ):
         self.base_url = (base_url or settings.llm_base_url).rstrip("/")
         self.model = model or settings.llm_model
         self.api_key = api_key or settings.llm_api_key
-        self.client = OpenAICompatClient(base_url=self.base_url, api_key=self.api_key, timeout_s=timeout_s)
+        self.reasoning_effort = reasoning_effort or settings.llm_reasoning_effort
+        self.client = OpenAICompatClient(
+            base_url=self.base_url,
+            api_key=self.api_key,
+            timeout_s=timeout_s,
+            reasoning_effort=self.reasoning_effort,
+        )
 
     def close(self) -> None:
         self.client.close()
@@ -46,4 +53,3 @@ class LLMClient:
         )
         meta = {"model": self.model, "timing_ms": int((time.time() - t0) * 1000)}
         return data, meta
-
